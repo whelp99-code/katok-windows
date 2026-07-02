@@ -1,0 +1,57 @@
+# Local secrets and auth material
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.sqlite-key
+auth-cache*.json
+kakaotalk-mac-auth.json
+# katok native KakaoTalk reader cache ({user_id, uuid} only, never the key)
+kakao/auth.json
+**/kakao/auth.json
+
+# KakaoTalk-derived private data
+/data/
+/archive/
+/indexes/
+/embeddings/
+/cache/
+/.fastembed_cache/
+**/.fastembed_cache/
+/logs/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.jsonl
+!tests/fixtures/**/*.jsonl
+*.lance/
+
+# katok generated stores
+/.katok/
+/.minsync/
+/.omo/evidence/
+/.omo/ulw-loop/
+/.omo/evidence/live-minsync/*.tmp/
+/.omo/ulw-loop/evidence/*data/
+!/.omo/ulw-loop/**/*.jsonl
+*.log
+
+# Rust
+/target/
+
+# Node / Python common output
+node_modules/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
