@@ -28,10 +28,7 @@ pub enum SendError {
          with the visible title"
     )]
     ChatNotInArchive(String),
-    #[error(
-        "multiple archive chats are named {room}; pass --chat <id> instead of --room \
-         (ids: {ids})"
-    )]
+    #[error("multiple chats match {room} ({ids}); pass a more specific --room or --chat <id>")]
     AmbiguousRoom { room: String, ids: String },
     #[error("pass --room <visible title> or --chat <archive chat_id> to choose the 1:1 chat")]
     MissingTarget,

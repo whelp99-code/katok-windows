@@ -64,9 +64,23 @@ pub(crate) fn run(
             chat,
             text,
             dry_run,
+            peek,
             list_windows,
             json,
-        } => send::run(room, chat, text, dry_run, list_windows, json, &archive_path),
+        } => send::run(
+            room,
+            chat,
+            text,
+            dry_run,
+            peek,
+            list_windows,
+            json,
+            &archive_path,
+        ),
+        #[cfg(feature = "windows-send")]
+        Commands::Peek { room, chat, json } => {
+            send::run(room, chat, None, false, true, false, json, &archive_path)
+        }
     }
 }
 

@@ -10,9 +10,9 @@ mod target;
 #[cfg(target_os = "windows")]
 mod windows_ui;
 
-pub use driver::{send_message, FakeUi, KakaoTalkUi, UiStatus};
+pub use driver::{peek_messages, send_message, FakeUi, KakaoTalkUi, PeekBubble, UiStatus};
 pub use error::SendError;
-pub use target::{resolve_target, titles_match, ResolvedTarget, SendRequest};
+pub use target::{pick_visible_title, resolve_target, titles_match, ResolvedTarget, SendRequest};
 
 use serde::Serialize;
 
@@ -25,6 +25,14 @@ pub struct SendReport {
     pub sent: bool,
     pub dry_run: bool,
     pub chars: usize,
+}
+
+/// Last visible bubbles from an already-open KakaoTalk chat window.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PeekReport {
+    pub room: String,
+    pub chat_id: Option<String>,
+    pub bubbles: Vec<PeekBubble>,
 }
 
 /// Build the platform UI driver. Non-Windows hosts fail clearly.

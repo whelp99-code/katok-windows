@@ -5,7 +5,10 @@
 
 use chrono::{TimeZone, Utc};
 use katok::archive::Archive;
-use katok::send::{send_message, titles_match, FakeUi, SendError, SendRequest, UiStatus};
+use katok::send::{
+    peek_messages, pick_visible_title, send_message, titles_match, FakeUi, PeekBubble, SendError,
+    SendRequest, UiStatus,
+};
 use katok::types::RawMessage;
 
 fn archive_with(messages: &[RawMessage]) -> (tempfile::TempDir, Archive) {
@@ -39,6 +42,7 @@ fn room_title_is_used_as_visible_target_without_archive() {
             chat: None,
             text: Some("hello".to_string()),
             dry_run: true,
+            peek: false,
         },
         None,
     )
@@ -56,6 +60,7 @@ fn chat_id_resolves_to_archive_display_name() {
             chat: Some("txt-zephyr".to_string()),
             text: None,
             dry_run: true,
+            peek: false,
         },
         Some(&archive),
     )
@@ -73,6 +78,7 @@ fn unknown_chat_id_fails_clearly() {
             chat: Some("missing-chat".to_string()),
             text: None,
             dry_run: true,
+            peek: false,
         },
         Some(&archive),
     )
@@ -96,6 +102,7 @@ fn ambiguous_room_name_in_archive_requires_chat_id() {
             chat: None,
             text: None,
             dry_run: true,
+            peek: false,
         },
         Some(&archive),
     )
@@ -116,6 +123,7 @@ fn unique_room_name_attaches_archive_chat_id() {
             chat: None,
             text: None,
             dry_run: true,
+            peek: false,
         },
         Some(&archive),
     )
@@ -133,6 +141,25 @@ fn titles_match_ignores_member_order_and_whitespace() {
 }
 
 #[test]
+fn unique_substring_matches_parenthesized_nickname() {
+    let picked = pick_visible_title(&["박재민(제피란더스)"], "제피란더스").expect("unique");
+    assert_eq!(picked, "박재민(제피란더스)");
+}
+
+#[test]
+fn exact_title_wins_over_substring_sibling() {
+    let picked = pick_visible_title(&["제피란더스", "박재민(제피란더스)"], "제피란더스")
+        .expect("exact preferred");
+    assert_eq!(picked, "제피란더스");
+}
+
+#[test]
+fn ambiguous_substring_does_not_guess_unrelated_rooms() {
+    let err = pick_visible_title(&["제피란더스", "제피2호"], "제피").expect_err("ambiguous");
+    assert!(matches!(err, SendError::AmbiguousRoom { .. }));
+}
+
+#[test]
 fn dry_run_focuses_chat_but_does_not_send() {
     let ui = FakeUi::logged_in(vec!["제피란더스".into()]);
     let report = send_message(
@@ -142,6 +169,7 @@ fn dry_run_focuses_chat_but_does_not_send() {
             chat: None,
             text: Some("이 텍스트는 보내지면 안 됨".to_string()),
             dry_run: true,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -168,6 +196,7 @@ fn send_pastes_korean_text_then_presses_send() {
             chat: None,
             text: Some("안녕하세요".to_string()),
             dry_run: false,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -191,6 +220,7 @@ fn refuses_empty_message_without_touching_compose() {
             chat: None,
             text: Some("   \n".to_string()),
             dry_run: false,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -215,6 +245,9 @@ fn fails_clearly_when_kakaotalk_is_not_running() {
         focused: std::cell::RefCell::new(None),
         pasted: std::cell::RefCell::new(None),
         send_presses: std::cell::RefCell::new(0),
+        refuse_foreground: false,
+        prepared: std::cell::RefCell::new(None),
+        bubbles: vec![],
     };
     let err = send_message(
         &ui,
@@ -223,6 +256,7 @@ fn fails_clearly_when_kakaotalk_is_not_running() {
             chat: None,
             text: Some("hi".to_string()),
             dry_run: true,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -247,6 +281,7 @@ fn fails_clearly_when_chat_is_not_found() {
             chat: None,
             text: None,
             dry_run: true,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -273,6 +308,9 @@ fn fails_clearly_on_login_screen() {
         focused: std::cell::RefCell::new(None),
         pasted: std::cell::RefCell::new(None),
         send_presses: std::cell::RefCell::new(0),
+        refuse_foreground: false,
+        prepared: std::cell::RefCell::new(None),
+        bubbles: vec![],
     };
     let err = send_message(
         &ui,
@@ -281,6 +319,7 @@ fn fails_clearly_on_login_screen() {
             chat: None,
             text: None,
             dry_run: true,
+            peek: false,
         },
         &katok::send::ResolvedTarget {
             title: "제피란더스".to_string(),
@@ -291,6 +330,92 @@ fn fails_clearly_on_login_screen() {
     let message = err.to_string();
     assert!(
         message.contains("login") && message.contains("not a login tool"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn send_works_when_chat_is_open_but_not_foreground() {
+    let ui = FakeUi::logged_in(vec!["박재민(제피란더스)".into()]).with_foreground_lock();
+    let report = send_message(
+        &ui,
+        &SendRequest {
+            room: Some("제피란더스".to_string()),
+            chat: None,
+            text: Some("포커스 없이 보내기".to_string()),
+            dry_run: false,
+            peek: false,
+        },
+        &katok::send::ResolvedTarget {
+            title: "제피란더스".to_string(),
+            chat_id: None,
+        },
+    )
+    .expect("unfocused send");
+    assert!(report.sent);
+    assert!(ui.focused().is_none());
+    assert_eq!(ui.prepared().as_deref(), Some("박재민(제피란더스)"));
+    assert_eq!(ui.pasted().as_deref(), Some("포커스 없이 보내기"));
+    assert_eq!(ui.send_presses(), 1);
+}
+
+#[test]
+fn peek_reads_last_visible_bubbles_from_open_chat() {
+    let ui = FakeUi::logged_in(vec!["박재민(제피란더스)".into()]).with_bubbles(vec![
+        PeekBubble {
+            direction: "incoming",
+            text: "지금 가능해요?".to_string(),
+        },
+        PeekBubble {
+            direction: "outgoing",
+            text: "네".to_string(),
+        },
+    ]);
+    let report = peek_messages(
+        &ui,
+        &SendRequest {
+            room: Some("제피란더스".to_string()),
+            chat: None,
+            text: None,
+            dry_run: false,
+            peek: true,
+        },
+        &katok::send::ResolvedTarget {
+            title: "제피란더스".to_string(),
+            chat_id: None,
+        },
+    )
+    .expect("peek");
+    assert_eq!(report.room, "박재민(제피란더스)");
+    assert_eq!(report.bubbles.len(), 2);
+    assert_eq!(report.bubbles[0].direction, "incoming");
+    assert_eq!(report.bubbles[0].text, "지금 가능해요?");
+    assert_eq!(report.bubbles[1].direction, "outgoing");
+    assert!(ui.pasted().is_none());
+    assert_eq!(ui.send_presses(), 0);
+}
+
+#[test]
+fn peek_fails_when_chat_window_is_not_open() {
+    let ui = FakeUi::logged_in(vec!["다른방".into()]);
+    let err = peek_messages(
+        &ui,
+        &SendRequest {
+            room: Some("제피란더스".to_string()),
+            chat: None,
+            text: None,
+            dry_run: false,
+            peek: true,
+        },
+        &katok::send::ResolvedTarget {
+            title: "제피란더스".to_string(),
+            chat_id: None,
+        },
+    )
+    .expect_err("closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("제피란더스") && message.to_lowercase().contains("not found"),
         "unexpected error: {message}"
     );
 }

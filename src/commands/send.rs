@@ -1,7 +1,7 @@
 use crate::support::print_payload;
 use anyhow::{Context, Result};
 use katok::archive::Archive;
-use katok::send::{platform_ui, resolve_target, send_message, SendRequest};
+use katok::send::{peek_messages, platform_ui, resolve_target, send_message, SendRequest};
 use std::io::Read;
 use std::path::Path;
 
@@ -11,6 +11,7 @@ pub(crate) fn run(
     chat: Option<String>,
     text: Option<String>,
     dry_run: bool,
+    peek: bool,
     list_windows: bool,
     json: bool,
     archive_path: &Path,
@@ -30,7 +31,7 @@ pub(crate) fn run(
         None
     };
 
-    let body = if dry_run {
+    let body = if peek || dry_run {
         text
     } else {
         let raw = match text {
@@ -51,8 +52,14 @@ pub(crate) fn run(
         chat,
         text: body,
         dry_run,
+        peek,
     };
     let target = resolve_target(&request, archive.as_ref()).context("resolve chat")?;
+    if peek {
+        let report =
+            peek_messages(ui.as_ref(), &request, &target).context("read KakaoTalk window")?;
+        return print_payload(json, &report);
+    }
     let report = send_message(ui.as_ref(), &request, &target).context("drive KakaoTalk UI")?;
     print_payload(json, &report)
 }

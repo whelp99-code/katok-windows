@@ -67,24 +67,44 @@ pub(crate) enum Commands {
     ///
     /// KakaoTalk PC must already be running and logged in. This is not a login
     /// tool and not a Kakao protocol client — it only drives KakaoTalk.exe via
-    /// Windows UI Automation / SendInput. macOS send is out of scope.
+    /// Windows UI Automation / SendInput. An already-open chat does not need to
+    /// be the foreground window. macOS send is out of scope.
     #[cfg(feature = "windows-send")]
     Send {
-        /// Visible 1:1 chat title as KakaoTalk shows it (window / chat-list name).
+        /// Visible 1:1 title, or a unique substring of that title.
         #[arg(long, required_unless_present_any = ["chat", "list_windows"])]
         room: Option<String>,
         /// Archive `chat_id` as reported by search / source chats / txt sync.
         #[arg(long, conflicts_with = "room")]
         chat: Option<String>,
-        /// Message body. Reads stdin when omitted (ignored with --dry-run).
+        /// Message body. Reads stdin when omitted (ignored with --dry-run / --peek).
         #[arg(long)]
         text: Option<String>,
-        /// Open/focus the chat but do not type or press Send.
+        /// Open/prepare the chat but do not type or press Send.
         #[arg(long)]
         dry_run: bool,
+        /// Read last visible bubbles from the already-open chat. Does not send.
+        #[arg(long, conflicts_with_all = ["dry_run", "text", "list_windows"])]
+        peek: bool,
         /// List KakaoTalk window titles and exit without sending.
         #[arg(long)]
         list_windows: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read last visible bubbles from an already-open KakaoTalk chat window.
+    ///
+    /// Official KakaoTalk.exe UI only. Does not scrape Kakao servers and does
+    /// not open a closed room. The chat must already be visible. `--room` may
+    /// be the exact window title or a unique substring of it.
+    #[cfg(feature = "windows-send")]
+    Peek {
+        /// Visible 1:1 title, or a unique substring of that title.
+        #[arg(long, required_unless_present = "chat")]
+        room: Option<String>,
+        /// Archive `chat_id` as reported by search / source chats / txt sync.
+        #[arg(long, conflicts_with = "room")]
+        chat: Option<String>,
         #[arg(long)]
         json: bool,
     },

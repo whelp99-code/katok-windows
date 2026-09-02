@@ -8,6 +8,7 @@ pub struct SendRequest {
     pub chat: Option<String>,
     pub text: Option<String>,
     pub dry_run: bool,
+    pub peek: bool,
 }
 
 /// Visible KakaoTalk title plus optional archive id.
@@ -89,6 +90,63 @@ pub fn titles_match(visible: &str, wanted: &str) -> bool {
         return true;
     }
     room_member_key(left) == room_member_key(right) && left.contains(',')
+}
+
+/// Pick one visible window title for `wanted`.
+///
+/// Exact / member-set matches win. Otherwise a unique substring of the
+/// visible title is accepted (`제피란더스` vs `박재민(제피란더스)`). Multiple
+/// substring hits are refused so an unrelated room is never guessed.
+pub fn pick_visible_title<I, S>(visibles: I, wanted: &str) -> Result<String, SendError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        return Err(SendError::MissingTarget);
+    }
+    let visibles: Vec<String> = visibles
+        .into_iter()
+        .map(|title| title.as_ref().trim().to_string())
+        .filter(|title| !title.is_empty())
+        .collect();
+
+    let exact: Vec<&String> = visibles
+        .iter()
+        .filter(|title| titles_match(title, wanted))
+        .collect();
+    match exact.len() {
+        1 => return Ok(exact[0].clone()),
+        n if n > 1 => {
+            return Err(SendError::AmbiguousRoom {
+                room: wanted.to_string(),
+                ids: exact
+                    .iter()
+                    .map(|title| title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
+        _ => {}
+    }
+
+    let substr: Vec<&String> = visibles
+        .iter()
+        .filter(|title| title.contains(wanted))
+        .collect();
+    match substr.len() {
+        1 => Ok(substr[0].clone()),
+        0 => Err(SendError::ChatNotFound(wanted.to_string())),
+        _ => Err(SendError::AmbiguousRoom {
+            room: wanted.to_string(),
+            ids: substr
+                .iter()
+                .map(|title| title.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+    }
 }
 
 fn room_member_key(title: &str) -> Vec<String> {
