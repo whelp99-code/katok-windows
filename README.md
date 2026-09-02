@@ -84,6 +84,31 @@ katok chunk context <chunk-id>
 
 여러 방을 넣으려면 방마다 내보내기 → 각각 `sync` 하면 됩니다.
 
+---
+
+## 메시지 보내기 (Windows 공식 앱 UI)
+
+`katok send`는 **이미 실행 중이고 이미 로그인된** 공식 카카오톡 PC(`KakaoTalk.exe`)의 채팅창을 Windows UI(창 포커스 / SendInput / 클립보드 붙여넣기)로 조작합니다. 카카오 프로토콜 클라이언트가 아니고, 로그인 도구도 아닙니다. 이 포크에서 macOS `katok send`는 범위 밖입니다.
+
+```bash
+# 1:1 방 제목으로 포커스만 (전송 안 함)
+katok send --room 제피란더스 --dry-run --json
+
+# 보내기. 한글은 IME 대신 클립보드 붙여넣기를 씁니다.
+katok send --room 제피란더스 --text "안녕하세요"
+
+# txt sync 후 아카이브 chat_id 로 지정
+katok send --chat txt-xxxxxxxx --text "안녕하세요" --json
+```
+
+전제:
+
+- 공식 카카오톡 PC가 설치되어 있고, **이미 로그인된 상태**로 켜져 있어야 합니다.
+- `--room`은 카카오톡이 창/목록에 보여주는 1:1 제목과 같아야 합니다.
+- `--chat`은 `sync --source txt` 로 넣은 아카이브의 `chat_id`입니다. 같은 이름이 여러 방이면 `--chat`을 쓰세요.
+- `--dry-run`은 방을 열거나 포커스한 뒤 멈춥니다. 입력하거나 Send를 누르지 않습니다.
+- 카카오톡이 꺼져 있거나 방을 찾지 못하면 분명한 오류로 끝납니다. 실제 전송 테스트는 `--dry-run`만 사용하세요.
+
 ### 지원하는 .txt 형식
 
 - **PC/최신 모바일**: `--------------- 2026년 1월 1일 목요일 ---------------` 날짜 구분선 + `[이름] [오전 9:00] 본문`
@@ -120,6 +145,7 @@ macOS 상세는 원본 [NomaDamas/katok](https://github.com/NomaDamas/katok)을 
 
 - `--source txt` 소스 어댑터 추가 (`src/import_txt.rs`)
 - Windows 빌드 대응: Windows 타깃은 순정 SQLite(`rusqlite` `bundled`)로 빌드해 OpenSSL/perl 의존 제거
+- `katok send`: 공식 `KakaoTalk.exe` UI로 1:1 메시지 전송 (Windows, `--dry-run` 지원)
 - 데이터 디렉토리: Windows는 `%APPDATA%\katok`
 - 한글 문서
 

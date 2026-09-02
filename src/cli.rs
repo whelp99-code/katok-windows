@@ -63,6 +63,31 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Send text through the official KakaoTalk Windows desktop app UI.
+    ///
+    /// KakaoTalk PC must already be running and logged in. This is not a login
+    /// tool and not a Kakao protocol client — it only drives KakaoTalk.exe via
+    /// Windows UI Automation / SendInput. macOS send is out of scope.
+    #[cfg(feature = "windows-send")]
+    Send {
+        /// Visible 1:1 chat title as KakaoTalk shows it (window / chat-list name).
+        #[arg(long, required_unless_present_any = ["chat", "list_windows"])]
+        room: Option<String>,
+        /// Archive `chat_id` as reported by search / source chats / txt sync.
+        #[arg(long, conflicts_with = "room")]
+        chat: Option<String>,
+        /// Message body. Reads stdin when omitted (ignored with --dry-run).
+        #[arg(long)]
+        text: Option<String>,
+        /// Open/focus the chat but do not type or press Send.
+        #[arg(long)]
+        dry_run: bool,
+        /// List KakaoTalk window titles and exit without sending.
+        #[arg(long)]
+        list_windows: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

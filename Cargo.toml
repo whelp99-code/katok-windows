@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
-description = "Local KakaoTalk keyword, BM25, and vector search CLI — macOS app DB + Windows exported .txt"
+description = "Local KakaoTalk keyword, BM25, and vector search CLI — macOS app DB + Windows exported .txt + Windows UI send"
 readme = "README.md"
 repository = "https://github.com/Hostingglobal-Tech/katok-windows"
 keywords = ["kakao", "kakaotalk", "search", "cli"]
@@ -47,8 +47,24 @@ toml = "0.8"
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 
+[features]
+default = ["windows-send"]
+# Drive official KakaoTalk.exe via Windows UI Automation / SendInput.
+# Never enables an unofficial Kakao protocol client.
+windows-send = []
+
 [target.'cfg(target_os = "windows")'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 assert_cmd = "2"

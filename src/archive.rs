@@ -8,7 +8,7 @@ mod read;
 mod schema;
 mod write;
 
-pub use model::{ChunkDraft, ParentChunkDraft, StoredMessage};
+pub use model::{ChatRecord, ChunkDraft, ParentChunkDraft, StoredMessage};
 
 pub struct Archive {
     pub(super) conn: Connection,
