@@ -1,10 +1,9 @@
-//! Drive official KakaoTalk.exe through UI Automation, with SendInput fallback.
+//! Drive official KakaoTalk.exe through UI Automation and RichEdit messages.
 //!
-//! Prefer acting on the existing chat HWND (Value + Invoke) so a non-interactive
-//! CLI can send when the window is open but not foreground. Foreground steal is
-//! best-effort only. No Kakao protocol client.
+//! ValuePattern SetValue does not notify KakaoTalk (Send stays grey). Paste and
+//! Enter go to the RichEdit HWND. Foreground steal is best-effort only.
 
-use super::driver::{KakaoTalkUi, PeekBubble, UiStatus};
+use super::driver::{keep_bubble_text, KakaoTalkUi, PeekBubble, UiStatus};
 use super::error::SendError;
 use super::target::{is_main_or_utility_title, looks_like_login_title, pick_visible_title};
 use std::cell::RefCell;
@@ -13,8 +12,7 @@ use std::mem::{size_of, zeroed};
 use std::thread;
 use std::time::Duration;
 use windows::core::{Interface, BSTR, VARIANT};
-use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -28,20 +26,22 @@ use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationElementArray,
-    IUIAutomationInvokePattern, IUIAutomationValuePattern, TreeScope_Descendants,
-    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId, UIA_DocumentControlTypeId,
-    UIA_EditControlTypeId, UIA_InvokePatternId, UIA_NamePropertyId, UIA_ValuePatternId,
+    IUIAutomationInvokePattern, IUIAutomationTextPattern, IUIAutomationValuePattern,
+    TreeScope_Descendants, UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+    UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_InvokePatternId,
+    UIA_LegacyIAccessibleNamePropertyId, UIA_NamePropertyId, UIA_TextPatternId, UIA_ValuePatternId,
+    UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, SetCursorPos, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
-    MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GetClientRect, GetForegroundWindow,
-    GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    LockSetForegroundWindow, PostMessageW, SendMessageW, SetForegroundWindow, ShowWindow, ASFW_ANY,
-    LSFW_UNLOCK, SW_RESTORE, WM_KEYDOWN, WM_KEYUP, WM_NULL,
+    AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, EnumWindows, GetClassNameW,
+    GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible, LockSetForegroundWindow, PostMessageW, SendMessageW, SetForegroundWindow,
+    ShowWindow, ASFW_ANY, LSFW_UNLOCK, SW_RESTORE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
+    WM_KEYDOWN, WM_KEYUP, WM_NULL,
 };
 
 const PROCESS_NAME: &str = "kakaotalk.exe";
@@ -49,6 +49,8 @@ const OPEN_WAIT: Duration = Duration::from_millis(150);
 const OPEN_TRIES: usize = 16;
 const CF_UNICODETEXT: u32 = 13;
 const WM_PASTE: u32 = 0x0302;
+const EM_SETSEL: u32 = 0x00B1;
+const EM_REPLACESEL: u32 = 0x00C2;
 
 #[derive(Clone)]
 struct FoundWindow {
@@ -59,6 +61,7 @@ struct FoundWindow {
 pub(super) struct WindowsKakaoTalkUi {
     pids: Vec<u32>,
     current: RefCell<Option<FoundWindow>>,
+    compose: RefCell<Option<isize>>,
 }
 
 impl WindowsKakaoTalkUi {
@@ -70,6 +73,7 @@ impl WindowsKakaoTalkUi {
         Ok(Self {
             pids,
             current: RefCell::new(None),
+            compose: RefCell::new(None),
         })
     }
 
@@ -189,46 +193,65 @@ impl KakaoTalkUi for WindowsKakaoTalkUi {
         let _ = try_focus_hwnd(hwnd_from_stored(found.hwnd));
         let visible = found.title.clone();
         *self.current.borrow_mut() = Some(found);
+        *self.compose.borrow_mut() = None;
         Ok(visible)
     }
 
     fn paste_compose(&self, text: &str) -> Result<(), SendError> {
         let hwnd = self.current_hwnd()?;
-        if uia_set_compose(hwnd, text).is_ok() {
-            return Ok(());
-        }
-        let _ = try_focus_hwnd(hwnd);
-        set_clipboard_text(text)?;
-        if unsafe { PostMessageW(hwnd, WM_PASTE, WPARAM(0), LPARAM(0)) }.is_ok() {
-            thread::sleep(Duration::from_millis(40));
-            return Ok(());
-        }
-        click_bottom_center(hwnd)?;
-        thread::sleep(Duration::from_millis(80));
-        tap_combo(VK_CONTROL, VIRTUAL_KEY(0x56))?;
-        thread::sleep(Duration::from_millis(80));
+        let edit = find_compose_hwnd(hwnd)?;
+        *self.compose.borrow_mut() = Some(edit.0 as isize);
+        paste_into_richedit(hwnd, edit, text)?;
         Ok(())
     }
 
     fn press_send(&self) -> Result<(), SendError> {
         let hwnd = self.current_hwnd()?;
-        if uia_invoke_send(hwnd).is_ok() {
-            return Ok(());
+        let edit = self
+            .compose
+            .borrow()
+            .map(hwnd_from_stored)
+            .filter(|handle| !handle.is_invalid())
+            .or_else(|| find_compose_hwnd(hwnd).ok());
+        for _ in 0..8 {
+            if uia_invoke_send_if_enabled(hwnd).is_ok() {
+                thread::sleep(Duration::from_millis(80));
+                if compose_text(edit).trim().is_empty() {
+                    return Ok(());
+                }
+            }
+            if let Some(edit) = edit {
+                post_return_to_edit(edit);
+                thread::sleep(Duration::from_millis(80));
+                if compose_text(Some(edit)).trim().is_empty() {
+                    return Ok(());
+                }
+            }
+            thread::sleep(Duration::from_millis(40));
         }
-        let _ = try_focus_hwnd(hwnd);
-        if unsafe { PostMessageW(hwnd, WM_KEYDOWN, WPARAM(VK_RETURN.0 as usize), LPARAM(0)) }
-            .is_ok()
-        {
-            let _ =
-                unsafe { PostMessageW(hwnd, WM_KEYUP, WPARAM(VK_RETURN.0 as usize), LPARAM(0)) };
-            return Ok(());
-        }
-        tap_key(VK_RETURN)
+        Ok(())
     }
 
     fn peek_visible_bubbles(&self) -> Result<Vec<PeekBubble>, SendError> {
         let hwnd = self.current_hwnd()?;
-        uia_peek_bubbles(hwnd)
+        let compose = compose_text(
+            self.compose
+                .borrow()
+                .map(hwnd_from_stored)
+                .or_else(|| find_compose_hwnd(hwnd).ok()),
+        );
+        uia_peek_bubbles(hwnd, compose.trim())
+    }
+
+    fn compose_value(&self) -> Result<String, SendError> {
+        let hwnd = self.current_hwnd()?;
+        let edit = self
+            .compose
+            .borrow()
+            .map(hwnd_from_stored)
+            .filter(|handle| !handle.is_invalid())
+            .or_else(|| find_compose_hwnd(hwnd).ok());
+        Ok(compose_text(edit))
     }
 }
 
@@ -352,48 +375,6 @@ fn try_focus_hwnd(hwnd: HWND) -> bool {
     }
 }
 
-fn click_bottom_center(hwnd: HWND) -> Result<(), SendError> {
-    unsafe {
-        let mut rect = RECT::default();
-        GetClientRect(hwnd, &mut rect)
-            .map_err(|err| SendError::Ui(format!("GetClientRect: {err}")))?;
-        let mut point = POINT {
-            x: (rect.right - rect.left) / 2,
-            y: (rect.bottom - rect.top).saturating_sub(36),
-        };
-        if point.y < 8 {
-            point.y = 8;
-        }
-        let _ = ClientToScreen(hwnd, &mut point);
-        SetCursorPos(point.x, point.y)
-            .map_err(|err| SendError::Ui(format!("SetCursorPos: {err}")))?;
-    }
-    mouse_click()
-}
-
-fn mouse_click() -> Result<(), SendError> {
-    send_inputs(&[
-        mouse_input(MOUSEEVENTF_LEFTDOWN),
-        mouse_input(MOUSEEVENTF_LEFTUP),
-    ])
-}
-
-fn mouse_input(flags: MOUSE_EVENT_FLAGS) -> INPUT {
-    INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: 0,
-                dy: 0,
-                mouseData: 0,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }
-}
-
 fn tap_key(key: VIRTUAL_KEY) -> Result<(), SendError> {
     send_inputs(&[key_input(key, false), key_input(key, true)])
 }
@@ -476,13 +457,154 @@ fn automation() -> Result<IUIAutomation, SendError> {
     }
 }
 
-fn uia_set_compose(hwnd: HWND, text: &str) -> Result<(), SendError> {
+fn find_compose_hwnd(chat: HWND) -> Result<HWND, SendError> {
+    if let Ok(edit) = uia_compose_element(chat) {
+        let _ = unsafe { edit.SetFocus() };
+        if let Ok(handle) = unsafe { edit.CurrentNativeWindowHandle() } {
+            if !handle.is_invalid() && handle != chat {
+                return Ok(handle);
+            }
+        }
+    }
+    find_richedit_child(chat).ok_or_else(|| SendError::Ui("no RichEdit compose HWND".into()))
+}
+
+fn uia_compose_element(hwnd: HWND) -> Result<IUIAutomationElement, SendError> {
     let auto = automation()?;
     let root = unsafe {
         auto.ElementFromHandle(hwnd)
             .map_err(|err| SendError::Ui(format!("ElementFromHandle: {err}")))?
     };
-    let edit = find_compose_edit(&auto, &root)?;
+    find_compose_edit(&auto, &root)
+}
+
+fn paste_into_richedit(chat: HWND, edit: HWND, text: &str) -> Result<(), SendError> {
+    set_clipboard_text(text)?;
+    select_all_and_paste(edit);
+    thread::sleep(Duration::from_millis(40));
+    if compose_text(Some(edit)).trim() == text.trim() {
+        return Ok(());
+    }
+    replace_sel(edit, text);
+    thread::sleep(Duration::from_millis(40));
+    if compose_text(Some(edit)).trim() == text.trim() {
+        return Ok(());
+    }
+    // ValuePattern alone does not notify KakaoTalk; replace-sel after SetValue fires EN_CHANGE.
+    let _ = uia_set_compose(chat, text);
+    select_all_and_paste(edit);
+    replace_sel(edit, text);
+    thread::sleep(Duration::from_millis(40));
+    if compose_text(Some(edit)).trim() == text.trim() {
+        return Ok(());
+    }
+    Err(SendError::Ui(
+        "could not put text in the KakaoTalk compose box".into(),
+    ))
+}
+
+fn select_all_and_paste(edit: HWND) {
+    unsafe {
+        let _ = SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        let _ = SendMessageW(edit, WM_PASTE, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(edit, WM_PASTE, WPARAM(0), LPARAM(0));
+    }
+}
+
+fn replace_sel(edit: HWND, text: &str) {
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+    unsafe {
+        let _ = SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        let _ = SendMessageW(
+            edit,
+            EM_REPLACESEL,
+            WPARAM(1),
+            LPARAM(wide.as_ptr() as isize),
+        );
+    }
+}
+
+fn post_return_to_edit(edit: HWND) {
+    unsafe {
+        let key = WPARAM(VK_RETURN.0 as usize);
+        let _ = SendMessageW(edit, WM_KEYDOWN, key, LPARAM(0));
+        let _ = SendMessageW(edit, WM_CHAR, key, LPARAM(0));
+        let _ = SendMessageW(edit, WM_KEYUP, key, LPARAM(1 << 30 | 1 << 31));
+        let _ = PostMessageW(edit, WM_KEYDOWN, key, LPARAM(0));
+        let _ = PostMessageW(edit, WM_CHAR, key, LPARAM(0));
+        let _ = PostMessageW(edit, WM_KEYUP, key, LPARAM(0));
+    }
+}
+
+fn compose_text(edit: Option<HWND>) -> String {
+    let Some(edit) = edit.filter(|handle| !handle.is_invalid()) else {
+        return String::new();
+    };
+    let via_message = window_text_message(edit);
+    if !via_message.trim().is_empty() {
+        return via_message;
+    }
+    window_title(edit)
+}
+
+fn window_text_message(hwnd: HWND) -> String {
+    unsafe {
+        let len = SendMessageW(hwnd, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0;
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        let copied = SendMessageW(
+            hwnd,
+            WM_GETTEXT,
+            WPARAM(buf.len()),
+            LPARAM(buf.as_mut_ptr() as isize),
+        )
+        .0;
+        if copied <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..copied as usize])
+    }
+}
+
+fn find_richedit_child(parent: HWND) -> Option<HWND> {
+    let mut found = HWND::default();
+    unsafe {
+        let _ = EnumChildWindows(
+            parent,
+            Some(enum_richedit_proc),
+            LPARAM(&mut found as *mut HWND as isize),
+        );
+    }
+    if found.is_invalid() {
+        None
+    } else {
+        Some(found)
+    }
+}
+
+unsafe extern "system" fn enum_richedit_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let found = &mut *(lparam.0 as *mut HWND);
+    if !found.is_invalid() {
+        return BOOL(0);
+    }
+    let mut buf = [0u16; 64];
+    let len = GetClassNameW(hwnd, &mut buf);
+    if len <= 0 {
+        return BOOL(1);
+    }
+    let class = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+    if class.contains("richedit") || class == "edit" {
+        *found = hwnd;
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+
+fn uia_set_compose(hwnd: HWND, text: &str) -> Result<(), SendError> {
+    let edit = uia_compose_element(hwnd)?;
     let unk = unsafe {
         edit.GetCurrentPattern(UIA_ValuePatternId)
             .map_err(|err| SendError::Ui(format!("Value pattern: {err}")))?
@@ -537,26 +659,32 @@ fn find_compose_edit(
         .ok_or_else(|| SendError::Ui("no compose box in KakaoTalk window".into()))
 }
 
-fn uia_invoke_send(hwnd: HWND) -> Result<(), SendError> {
+fn uia_invoke_send_if_enabled(hwnd: HWND) -> Result<(), SendError> {
     let auto = automation()?;
     let root = unsafe {
         auto.ElementFromHandle(hwnd)
             .map_err(|err| SendError::Ui(format!("ElementFromHandle: {err}")))?
     };
-    if let Ok(button) = find_named_invoke(&auto, &root, &["전송", "보내기", "Send"]) {
+    if let Ok((element, invoke)) = find_named_send(&auto, &root, &["전송", "보내기", "Send"]) {
+        if !uia_enabled(&element) {
+            return Err(SendError::Ui("Send button disabled".into()));
+        }
         unsafe {
-            button
+            invoke
                 .Invoke()
                 .map_err(|err| SendError::Ui(format!("Invoke Send: {err}")))?;
         }
         return Ok(());
     }
     let buttons = find_all_control(&auto, &root, UIA_ButtonControlTypeId.0)?;
-    let mut best: Option<(i32, IUIAutomationInvokePattern)> = None;
+    let mut best: Option<(i32, IUIAutomationElement, IUIAutomationInvokePattern)> = None;
     for index in 0..all_len(&buttons) {
         let Ok(element) = (unsafe { buttons.GetElement(index) }) else {
             continue;
         };
+        if !uia_enabled(&element) {
+            continue;
+        }
         let Ok(unk) = (unsafe { element.GetCurrentPattern(UIA_InvokePatternId) }) else {
             continue;
         };
@@ -567,13 +695,13 @@ fn uia_invoke_send(hwnd: HWND) -> Result<(), SendError> {
             .map(|rect| rect.bottom)
             .unwrap_or(0);
         match &best {
-            Some((current, _)) if *current >= bottom => {}
-            _ => best = Some((bottom, invoke)),
+            Some((current, _, _)) if *current >= bottom => {}
+            _ => best = Some((bottom, element, invoke)),
         }
     }
     let invoke = best
-        .map(|(_, invoke)| invoke)
-        .ok_or_else(|| SendError::Ui("no Send button in KakaoTalk window".into()))?;
+        .map(|(_, _, invoke)| invoke)
+        .ok_or_else(|| SendError::Ui("no enabled Send button in KakaoTalk window".into()))?;
     unsafe {
         invoke
             .Invoke()
@@ -582,11 +710,17 @@ fn uia_invoke_send(hwnd: HWND) -> Result<(), SendError> {
     Ok(())
 }
 
-fn find_named_invoke(
+fn uia_enabled(element: &IUIAutomationElement) -> bool {
+    unsafe { element.CurrentIsEnabled() }
+        .map(is_true)
+        .unwrap_or(false)
+}
+
+fn find_named_send(
     auto: &IUIAutomation,
     root: &IUIAutomationElement,
     names: &[&str],
-) -> Result<IUIAutomationInvokePattern, SendError> {
+) -> Result<(IUIAutomationElement, IUIAutomationInvokePattern), SendError> {
     for name in names {
         let condition = unsafe {
             auto.CreatePropertyCondition(UIA_NamePropertyId, VARIANT::from(*name))
@@ -599,13 +733,13 @@ fn find_named_invoke(
             continue;
         };
         if let Ok(invoke) = unk.cast() {
-            return Ok(invoke);
+            return Ok((element, invoke));
         }
     }
     Err(SendError::Ui("named Send control not found".into()))
 }
 
-fn uia_peek_bubbles(hwnd: HWND) -> Result<Vec<PeekBubble>, SendError> {
+fn uia_peek_bubbles(hwnd: HWND, compose: &str) -> Result<Vec<PeekBubble>, SendError> {
     let auto = automation()?;
     let root = unsafe {
         auto.ElementFromHandle(hwnd)
@@ -615,20 +749,26 @@ fn uia_peek_bubbles(hwnd: HWND) -> Result<Vec<PeekBubble>, SendError> {
     let mut window_rect = RECT::default();
     let _ = unsafe { GetWindowRect(hwnd, &mut window_rect) };
     let mid_x = (window_rect.left + window_rect.right) / 2;
+    let compose_top = window_rect.bottom.saturating_sub(72);
     let mut scored = Vec::new();
     for index in 0..all_len(&all) {
         let Ok(element) = (unsafe { all.GetElement(index) }) else {
             continue;
         };
-        let Ok(name) = (unsafe { element.CurrentName() }) else {
-            continue;
-        };
-        let text = name.to_string();
-        if !keep_bubble_text(&text) {
+        if is_compose_element(&element) {
             continue;
         }
         let rect = unsafe { element.CurrentBoundingRectangle() }.unwrap_or_default();
-        if rect.bottom <= rect.top {
+        if rect.bottom <= rect.top || rect.top >= compose_top {
+            continue;
+        }
+        let Some(text) = element_visible_text(&element) else {
+            continue;
+        };
+        if !keep_bubble_text(&text) {
+            continue;
+        }
+        if !compose.is_empty() && text.trim() == compose {
             continue;
         }
         let direction = if rect.left >= mid_x {
@@ -639,6 +779,7 @@ fn uia_peek_bubbles(hwnd: HWND) -> Result<Vec<PeekBubble>, SendError> {
         scored.push((rect.top, rect.left, PeekBubble { direction, text }));
     }
     scored.sort_by_key(|(top, left, _)| (*top, *left));
+    scored.dedup_by(|a, b| a.2.text == b.2.text && a.2.direction == b.2.direction);
     const KEEP: usize = 20;
     let start = scored.len().saturating_sub(KEEP);
     Ok(scored
@@ -648,24 +789,76 @@ fn uia_peek_bubbles(hwnd: HWND) -> Result<Vec<PeekBubble>, SendError> {
         .collect())
 }
 
-fn keep_bubble_text(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() || text.chars().count() > 2000 {
-        return false;
+fn is_compose_element(element: &IUIAutomationElement) -> bool {
+    if let Ok(control) = unsafe { element.CurrentControlType() } {
+        if control == UIA_EditControlTypeId || control == UIA_DocumentControlTypeId {
+            return true;
+        }
     }
-    !matches!(
-        text,
-        "전송"
-            | "보내기"
-            | "Send"
-            | "검색"
-            | "Search"
-            | "카카오톡"
-            | "KakaoTalk"
-            | "이모티콘"
-            | "사진"
-            | "파일"
-    )
+    if let Ok(class) = unsafe { element.CurrentClassName() } {
+        let class = class.to_string().to_ascii_lowercase();
+        if class.contains("richedit") {
+            return true;
+        }
+    }
+    if let Ok(unk) = unsafe { element.GetCurrentPattern(UIA_ValuePatternId) } {
+        if let Ok(value) = unk.cast::<IUIAutomationValuePattern>() {
+            let readonly = unsafe { value.CurrentIsReadOnly() }
+                .map(is_true)
+                .unwrap_or(true);
+            if !readonly {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn element_visible_text(element: &IUIAutomationElement) -> Option<String> {
+    let candidates = [
+        unsafe { element.CurrentName() }
+            .ok()
+            .map(|name| name.to_string()),
+        property_string(element, UIA_LegacyIAccessibleNamePropertyId),
+        text_pattern_text(element),
+        readonly_value(element),
+    ];
+    candidates.into_iter().flatten().find_map(|text| {
+        let text = text.trim().to_string();
+        if keep_bubble_text(&text) {
+            Some(text)
+        } else {
+            None
+        }
+    })
+}
+
+fn property_string(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<String> {
+    let variant = unsafe { element.GetCurrentPropertyValue(property) }.ok()?;
+    BSTR::try_from(&variant).ok().map(|value| value.to_string())
+}
+
+fn text_pattern_text(element: &IUIAutomationElement) -> Option<String> {
+    let unk = unsafe { element.GetCurrentPattern(UIA_TextPatternId) }.ok()?;
+    let pattern: IUIAutomationTextPattern = unk.cast().ok()?;
+    let range = unsafe { pattern.DocumentRange() }.ok()?;
+    unsafe { range.GetText(-1) }
+        .ok()
+        .map(|text| text.to_string())
+}
+
+fn readonly_value(element: &IUIAutomationElement) -> Option<String> {
+    let unk = unsafe { element.GetCurrentPattern(UIA_ValuePatternId) }.ok()?;
+    let value: IUIAutomationValuePattern = unk.cast().ok()?;
+    let readonly = unsafe { value.CurrentIsReadOnly() }
+        .map(is_true)
+        .unwrap_or(false);
+    if !readonly {
+        return None;
+    }
+    unsafe { value.CurrentValue() }
+        .ok()
+        .map(|text| text.to_string())
 }
 
 fn find_first_control(

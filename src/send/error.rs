@@ -36,6 +36,11 @@ pub enum SendError {
     EmptyMessage,
     #[error("no local archive; run `katok sync --source txt` first or pass --room")]
     ArchiveMissing,
+    #[error(
+        "KakaoTalk did not send: the compose box still has text after Send. Paste without \
+         Enter is a failure. The Send button may have stayed disabled."
+    )]
+    NotDelivered,
     #[error("KakaoTalk UI error: {0}")]
     Ui(String),
 }

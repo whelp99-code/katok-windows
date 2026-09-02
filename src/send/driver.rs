@@ -29,6 +29,8 @@ pub trait KakaoTalkUi {
     fn paste_compose(&self, text: &str) -> Result<(), SendError>;
     fn press_send(&self) -> Result<(), SendError>;
     fn peek_visible_bubbles(&self) -> Result<Vec<PeekBubble>, SendError>;
+    /// Current compose-box text. Empty after a real send.
+    fn compose_value(&self) -> Result<String, SendError>;
 }
 
 /// In-memory KakaoTalk stand-in. Never talks to a real install.
@@ -41,7 +43,9 @@ pub struct FakeUi {
     pub send_presses: RefCell<usize>,
     pub refuse_foreground: bool,
     pub prepared: RefCell<Option<String>>,
-    pub bubbles: Vec<PeekBubble>,
+    pub bubbles: RefCell<Vec<PeekBubble>>,
+    pub compose: RefCell<Option<String>>,
+    pub commit_on_send: bool,
 }
 
 impl FakeUi {
@@ -58,7 +62,9 @@ impl FakeUi {
             send_presses: RefCell::new(0),
             refuse_foreground: false,
             prepared: RefCell::new(None),
-            bubbles: Vec::new(),
+            bubbles: RefCell::new(Vec::new()),
+            compose: RefCell::new(None),
+            commit_on_send: true,
         }
     }
 
@@ -67,9 +73,19 @@ impl FakeUi {
         self
     }
 
-    pub fn with_bubbles(mut self, bubbles: Vec<PeekBubble>) -> Self {
-        self.bubbles = bubbles;
+    /// Paste into compose but do not commit Send (grey/idle Send button).
+    pub fn with_idle_send(mut self) -> Self {
+        self.commit_on_send = false;
         self
+    }
+
+    pub fn with_bubbles(mut self, bubbles: Vec<PeekBubble>) -> Self {
+        self.bubbles = RefCell::new(bubbles);
+        self
+    }
+
+    pub fn compose(&self) -> Option<String> {
+        self.compose.borrow().clone()
     }
 
     pub fn focused(&self) -> Option<String> {
@@ -121,16 +137,29 @@ impl KakaoTalkUi for FakeUi {
             return Err(SendError::Ui("no chat prepared".into()));
         }
         *self.pasted.borrow_mut() = Some(text.to_string());
+        *self.compose.borrow_mut() = Some(text.to_string());
         Ok(())
     }
 
     fn press_send(&self) -> Result<(), SendError> {
         *self.send_presses.borrow_mut() += 1;
+        if self.commit_on_send {
+            if let Some(text) = self.compose.borrow_mut().take() {
+                self.bubbles.borrow_mut().push(PeekBubble {
+                    direction: "outgoing",
+                    text,
+                });
+            }
+        }
         Ok(())
     }
 
     fn peek_visible_bubbles(&self) -> Result<Vec<PeekBubble>, SendError> {
-        Ok(self.bubbles.clone())
+        Ok(self.bubbles.borrow().clone())
+    }
+
+    fn compose_value(&self) -> Result<String, SendError> {
+        Ok(self.compose.borrow().clone().unwrap_or_default())
     }
 }
 
@@ -173,7 +202,11 @@ pub fn send_message(
         .ok_or(SendError::EmptyMessage)?;
 
     ui.paste_compose(body)?;
+    let prior_outgoing = outgoing_texts(ui);
     ui.press_send()?;
+    if !confirm_delivered(ui, body, &prior_outgoing)? {
+        return Err(SendError::NotDelivered);
+    }
 
     Ok(SendReport {
         resolved: true,
@@ -185,7 +218,33 @@ pub fn send_message(
     })
 }
 
-/// Read last visible bubbles from an already-open chat window. Never sends.
+fn outgoing_texts(ui: &dyn KakaoTalkUi) -> Vec<String> {
+    filter_peek_bubbles(ui.peek_visible_bubbles().unwrap_or_default())
+        .into_iter()
+        .filter(|bubble| bubble.direction == "outgoing")
+        .map(|bubble| bubble.text)
+        .collect()
+}
+
+fn confirm_delivered(
+    ui: &dyn KakaoTalkUi,
+    body: &str,
+    prior_outgoing: &[String],
+) -> Result<bool, SendError> {
+    let leftover = ui.compose_value()?.trim().to_string();
+    if leftover.is_empty() {
+        return Ok(true);
+    }
+    let now = outgoing_texts(ui);
+    let prior_hits = prior_outgoing
+        .iter()
+        .filter(|text| text.trim() == body)
+        .count();
+    let now_hits = now.iter().filter(|text| text.trim() == body).count();
+    Ok(now_hits > prior_hits)
+}
+
+/// Last visible bubbles from an already-open chat window. Never sends.
 pub fn peek_messages(
     ui: &dyn KakaoTalkUi,
     _request: &SendRequest,
@@ -193,10 +252,55 @@ pub fn peek_messages(
 ) -> Result<PeekReport, SendError> {
     ensure_ready(ui)?;
     let visible = ui.prepare_chat(&target.title, false)?;
-    let bubbles = ui.peek_visible_bubbles()?;
+    let bubbles = filter_peek_bubbles(ui.peek_visible_bubbles()?);
     Ok(PeekReport {
         room: visible,
         chat_id: target.chat_id.clone(),
         bubbles,
     })
+}
+
+/// Drop compose-box chrome such as `RichEdit Control`. Never keep that as a bubble.
+pub fn keep_bubble_text(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() || text.chars().count() > 2000 {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("richedit") || lower == "edit control" || lower == "document control" {
+        return false;
+    }
+    !matches!(
+        text,
+        "전송"
+            | "보내기"
+            | "Send"
+            | "검색"
+            | "Search"
+            | "카카오톡"
+            | "KakaoTalk"
+            | "이모티콘"
+            | "사진"
+            | "파일"
+    )
+}
+
+fn filter_peek_bubbles(bubbles: Vec<PeekBubble>) -> Vec<PeekBubble> {
+    bubbles
+        .into_iter()
+        .filter(|bubble| keep_bubble_text(&bubble.text))
+        .collect()
+}
+
+#[cfg(test)]
+mod bubble_filter_tests {
+    use super::keep_bubble_text;
+
+    #[test]
+    fn rejects_richedit_control_name() {
+        assert!(!keep_bubble_text("RichEdit Control"));
+        assert!(!keep_bubble_text("richedit control"));
+        assert!(keep_bubble_text("다시"));
+        assert!(keep_bubble_text("포커스없이"));
+    }
 }

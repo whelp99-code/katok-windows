@@ -10,7 +10,9 @@ mod target;
 #[cfg(target_os = "windows")]
 mod windows_ui;
 
-pub use driver::{peek_messages, send_message, FakeUi, KakaoTalkUi, PeekBubble, UiStatus};
+pub use driver::{
+    keep_bubble_text, peek_messages, send_message, FakeUi, KakaoTalkUi, PeekBubble, UiStatus,
+};
 pub use error::SendError;
 pub use target::{pick_visible_title, resolve_target, titles_match, ResolvedTarget, SendRequest};
 

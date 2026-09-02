@@ -247,7 +247,9 @@ fn fails_clearly_when_kakaotalk_is_not_running() {
         send_presses: std::cell::RefCell::new(0),
         refuse_foreground: false,
         prepared: std::cell::RefCell::new(None),
-        bubbles: vec![],
+        bubbles: std::cell::RefCell::new(vec![]),
+        compose: std::cell::RefCell::new(None),
+        commit_on_send: true,
     };
     let err = send_message(
         &ui,
@@ -310,7 +312,9 @@ fn fails_clearly_on_login_screen() {
         send_presses: std::cell::RefCell::new(0),
         refuse_foreground: false,
         prepared: std::cell::RefCell::new(None),
-        bubbles: vec![],
+        bubbles: std::cell::RefCell::new(vec![]),
+        compose: std::cell::RefCell::new(None),
+        commit_on_send: true,
     };
     let err = send_message(
         &ui,
@@ -357,6 +361,77 @@ fn send_works_when_chat_is_open_but_not_foreground() {
     assert_eq!(ui.prepared().as_deref(), Some("박재민(제피란더스)"));
     assert_eq!(ui.pasted().as_deref(), Some("포커스 없이 보내기"));
     assert_eq!(ui.send_presses(), 1);
+}
+
+#[test]
+fn send_fails_if_compose_still_has_text_after_send() {
+    let ui = FakeUi::logged_in(vec!["박재민".into()])
+        .with_foreground_lock()
+        .with_idle_send();
+    let err = send_message(
+        &ui,
+        &SendRequest {
+            room: Some("박재민".to_string()),
+            chat: None,
+            text: Some("포커스없이".to_string()),
+            dry_run: false,
+            peek: false,
+        },
+        &katok::send::ResolvedTarget {
+            title: "박재민".to_string(),
+            chat_id: None,
+        },
+    )
+    .expect_err("paste without enter");
+    let message = err.to_string();
+    assert!(
+        message.to_lowercase().contains("compose")
+            || message.to_lowercase().contains("did not send")
+            || message.contains("Send"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(ui.compose().as_deref(), Some("포커스없이"));
+    assert_eq!(ui.pasted().as_deref(), Some("포커스없이"));
+}
+
+#[test]
+fn peek_filters_compose_richedit_control() {
+    let ui = FakeUi::logged_in(vec!["박재민".into()]).with_bubbles(vec![
+        PeekBubble {
+            direction: "incoming",
+            text: "RichEdit Control".to_string(),
+        },
+        PeekBubble {
+            direction: "outgoing",
+            text: "다시".to_string(),
+        },
+    ]);
+    let report = peek_messages(
+        &ui,
+        &SendRequest {
+            room: Some("박재민".to_string()),
+            chat: None,
+            text: None,
+            dry_run: false,
+            peek: true,
+        },
+        &katok::send::ResolvedTarget {
+            title: "박재민".to_string(),
+            chat_id: None,
+        },
+    )
+    .expect("peek");
+    assert!(
+        report
+            .bubbles
+            .iter()
+            .all(|bubble| !bubble.text.to_ascii_lowercase().contains("richedit")),
+        "compose control leaked: {:?}",
+        report.bubbles
+    );
+    assert_eq!(report.bubbles.len(), 1);
+    assert_eq!(report.bubbles[0].text, "다시");
+    assert_eq!(report.bubbles[0].direction, "outgoing");
 }
 
 #[test]
