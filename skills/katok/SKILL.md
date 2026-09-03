@@ -42,6 +42,7 @@ katok send --room "제피란더스" --text "안녕하세요" --json
 katok send --chat <archive-chat-id> --text "안녕하세요" --json
 katok peek --room "제피란더스" --json
 katok send --peek --room "제피란더스" --json
+# peek JSON: { room, bubbles: [{ direction, text, sender? }] } — open window only
 ```
 
 For synthetic QA only:

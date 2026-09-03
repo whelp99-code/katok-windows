@@ -3,8 +3,9 @@
 //! ValuePattern SetValue does not notify KakaoTalk (Send stays grey). Paste and
 //! Enter go to the RichEdit HWND. Foreground steal is best-effort only.
 
-use super::driver::{keep_bubble_text, KakaoTalkUi, PeekBubble, UiStatus};
+use super::driver::{KakaoTalkUi, UiStatus};
 use super::error::SendError;
+use super::peek::{bubbles_from_nodes, PeekBubble, PeekNode, PeekRect};
 use super::target::{is_main_or_utility_title, looks_like_login_title, pick_visible_title};
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -25,12 +26,12 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationElementArray,
-    IUIAutomationInvokePattern, IUIAutomationTextPattern, IUIAutomationValuePattern,
-    TreeScope_Descendants, UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
-    UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_InvokePatternId,
-    UIA_LegacyIAccessibleNamePropertyId, UIA_NamePropertyId, UIA_TextPatternId, UIA_ValuePatternId,
-    UIA_PROPERTY_ID,
+    AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationElement,
+    IUIAutomationElementArray, IUIAutomationInvokePattern, IUIAutomationTextPattern,
+    IUIAutomationTreeWalker, IUIAutomationValuePattern, TreeScope_Descendants,
+    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_InvokePatternId, UIA_LegacyIAccessibleNamePropertyId,
+    UIA_NamePropertyId, UIA_TextPatternId, UIA_ValuePatternId, UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
@@ -40,8 +41,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, EnumWindows, GetClassNameW,
     GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindowVisible, LockSetForegroundWindow, PostMessageW, SendMessageW, SetForegroundWindow,
-    ShowWindow, ASFW_ANY, LSFW_UNLOCK, SW_RESTORE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
-    WM_KEYDOWN, WM_KEYUP, WM_NULL,
+    ShowWindow, ASFW_ANY, LSFW_UNLOCK, OBJID_CLIENT, SW_RESTORE, WM_CHAR, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_NULL,
 };
 
 const PROCESS_NAME: &str = "kakaotalk.exe";
@@ -740,53 +741,254 @@ fn find_named_send(
 }
 
 fn uia_peek_bubbles(hwnd: HWND, compose: &str) -> Result<Vec<PeekBubble>, SendError> {
+    let mut window_rect = RECT::default();
+    let _ = unsafe { GetWindowRect(hwnd, &mut window_rect) };
+    let window = PeekRect {
+        left: window_rect.left,
+        top: window_rect.top,
+        right: window_rect.right,
+        bottom: window_rect.bottom,
+    };
+    let mut nodes = collect_raw_nodes(hwnd).unwrap_or_default();
+    let mut bubbles = bubbles_from_nodes(&nodes, window, compose);
+    if bubbles.is_empty() {
+        nodes = collect_msaa_nodes(hwnd).unwrap_or_default();
+        bubbles = bubbles_from_nodes(&nodes, window, compose);
+    }
+    if bubbles.is_empty() {
+        nodes = collect_child_hwnd_nodes(hwnd);
+        bubbles = bubbles_from_nodes(&nodes, window, compose);
+    }
+    Ok(bubbles)
+}
+
+fn collect_raw_nodes(hwnd: HWND) -> Result<Vec<PeekNode>, SendError> {
     let auto = automation()?;
     let root = unsafe {
         auto.ElementFromHandle(hwnd)
             .map_err(|err| SendError::Ui(format!("ElementFromHandle: {err}")))?
     };
-    let all = find_all(&auto, &root)?;
-    let mut window_rect = RECT::default();
-    let _ = unsafe { GetWindowRect(hwnd, &mut window_rect) };
-    let mid_x = (window_rect.left + window_rect.right) / 2;
-    let compose_top = window_rect.bottom.saturating_sub(72);
-    let mut scored = Vec::new();
-    for index in 0..all_len(&all) {
-        let Ok(element) = (unsafe { all.GetElement(index) }) else {
-            continue;
-        };
-        if is_compose_element(&element) {
-            continue;
-        }
-        let rect = unsafe { element.CurrentBoundingRectangle() }.unwrap_or_default();
-        if rect.bottom <= rect.top || rect.top >= compose_top {
-            continue;
-        }
-        let Some(text) = element_visible_text(&element) else {
-            continue;
-        };
-        if !keep_bubble_text(&text) {
-            continue;
-        }
-        if !compose.is_empty() && text.trim() == compose {
-            continue;
-        }
-        let direction = if rect.left >= mid_x {
-            "outgoing"
-        } else {
-            "incoming"
-        };
-        scored.push((rect.top, rect.left, PeekBubble { direction, text }));
+    let walker = unsafe {
+        auto.RawViewWalker()
+            .map_err(|err| SendError::Ui(format!("RawViewWalker: {err}")))?
+    };
+    let mut nodes = Vec::new();
+    walk_raw(&walker, &root, 0, &mut nodes);
+    Ok(nodes)
+}
+
+fn walk_raw(
+    walker: &IUIAutomationTreeWalker,
+    element: &IUIAutomationElement,
+    depth: usize,
+    nodes: &mut Vec<PeekNode>,
+) {
+    const MAX_DEPTH: usize = 24;
+    const MAX_NODES: usize = 2500;
+    if depth > MAX_DEPTH || nodes.len() >= MAX_NODES {
+        return;
     }
-    scored.sort_by_key(|(top, left, _)| (*top, *left));
-    scored.dedup_by(|a, b| a.2.text == b.2.text && a.2.direction == b.2.direction);
-    const KEEP: usize = 20;
-    let start = scored.len().saturating_sub(KEEP);
-    Ok(scored
+    if let Some(node) = peek_node_from_uia(element) {
+        nodes.push(node);
+    }
+    let Ok(first) = (unsafe { walker.GetFirstChildElement(element) }) else {
+        return;
+    };
+    let mut current = first;
+    loop {
+        walk_raw(walker, &current, depth + 1, nodes);
+        if nodes.len() >= MAX_NODES {
+            return;
+        }
+        match unsafe { walker.GetNextSiblingElement(&current) } {
+            Ok(next) => current = next,
+            Err(_) => break,
+        }
+    }
+}
+
+fn peek_node_from_uia(element: &IUIAutomationElement) -> Option<PeekNode> {
+    let rect = unsafe { element.CurrentBoundingRectangle() }.ok()?;
+    if rect.bottom <= rect.top && rect.right <= rect.left {
+        return None;
+    }
+    let text = element_any_text(element)?;
+    Some(PeekNode {
+        text,
+        rect: PeekRect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        },
+        is_compose: is_compose_element(element),
+        is_button: is_send_button_element(element),
+    })
+}
+
+fn is_send_button_element(element: &IUIAutomationElement) -> bool {
+    if let Ok(control) = unsafe { element.CurrentControlType() } {
+        if control == UIA_ButtonControlTypeId {
+            return true;
+        }
+    }
+    let name = unsafe { element.CurrentName() }
+        .ok()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    matches!(name.trim(), "전송" | "보내기" | "Send")
+}
+
+fn collect_msaa_nodes(hwnd: HWND) -> Result<Vec<PeekNode>, SendError> {
+    unsafe {
+        let mut ptr = std::ptr::null_mut();
+        AccessibleObjectFromWindow(hwnd, OBJID_CLIENT.0 as u32, &IAccessible::IID, &mut ptr)
+            .map_err(|err| SendError::Ui(format!("MSAA: {err}")))?;
+        if ptr.is_null() {
+            return Ok(Vec::new());
+        }
+        let acc = IAccessible::from_raw(ptr);
+        let mut nodes = Vec::new();
+        walk_msaa(&acc, 0, &mut nodes);
+        Ok(nodes)
+    }
+}
+
+fn walk_msaa(acc: &IAccessible, depth: usize, nodes: &mut Vec<PeekNode>) {
+    const MAX_DEPTH: usize = 16;
+    const MAX_NODES: usize = 2500;
+    if depth > MAX_DEPTH || nodes.len() >= MAX_NODES {
+        return;
+    }
+    if let Some(node) = peek_node_from_msaa(acc, 0) {
+        nodes.push(node);
+    }
+    let count = unsafe { acc.accChildCount() }.unwrap_or(0);
+    for index in 1..=count {
+        if nodes.len() >= MAX_NODES {
+            return;
+        }
+        let child_id = VARIANT::from(index);
+        if let Ok(dispatch) = unsafe { acc.get_accChild(&child_id) } {
+            if let Ok(child) = dispatch.cast::<IAccessible>() {
+                walk_msaa(&child, depth + 1, nodes);
+                continue;
+            }
+            let _ = dispatch;
+        }
+        if let Some(node) = peek_node_from_msaa(acc, index) {
+            nodes.push(node);
+        }
+    }
+}
+
+fn peek_node_from_msaa(acc: &IAccessible, child: i32) -> Option<PeekNode> {
+    let id = VARIANT::from(child);
+    let name = unsafe { acc.get_accName(&id) }
+        .ok()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let value = unsafe { acc.get_accValue(&id) }
+        .ok()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let text = [name.trim(), value.trim()]
         .into_iter()
-        .skip(start)
-        .map(|(_, _, bubble)| bubble)
-        .collect())
+        .find(|part| !part.is_empty())?
+        .to_string();
+    let mut left = 0;
+    let mut top = 0;
+    let mut width = 0;
+    let mut height = 0;
+    unsafe {
+        acc.accLocation(&mut left, &mut top, &mut width, &mut height, &id)
+            .ok()?;
+    }
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    Some(PeekNode {
+        is_compose: lower.contains("richedit"),
+        is_button: matches!(text.trim(), "전송" | "보내기" | "Send"),
+        text,
+        rect: PeekRect {
+            left,
+            top,
+            right: left.saturating_add(width),
+            bottom: top.saturating_add(height),
+        },
+    })
+}
+
+fn collect_child_hwnd_nodes(parent: HWND) -> Vec<PeekNode> {
+    let mut nodes = Vec::new();
+    let mut state = ChildTextState { nodes: &mut nodes };
+    unsafe {
+        let _ = EnumChildWindows(
+            parent,
+            Some(enum_child_text_proc),
+            LPARAM(&mut state as *mut ChildTextState as isize),
+        );
+    }
+    nodes
+}
+
+struct ChildTextState<'a> {
+    nodes: &'a mut Vec<PeekNode>,
+}
+
+unsafe extern "system" fn enum_child_text_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let state = &mut *(lparam.0 as *mut ChildTextState);
+    let mut class_buf = [0u16; 64];
+    let class_len = GetClassNameW(hwnd, &mut class_buf);
+    let class = if class_len > 0 {
+        String::from_utf16_lossy(&class_buf[..class_len as usize]).to_ascii_lowercase()
+    } else {
+        String::new()
+    };
+    let text = window_text_message(hwnd);
+    let text = if text.trim().is_empty() {
+        window_title(hwnd)
+    } else {
+        text
+    };
+    if text.trim().is_empty() {
+        return BOOL(1);
+    }
+    let mut rect = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut rect);
+    state.nodes.push(PeekNode {
+        is_compose: class.contains("richedit") || class == "edit",
+        is_button: false,
+        text,
+        rect: PeekRect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        },
+    });
+    BOOL(1)
+}
+
+fn element_any_text(element: &IUIAutomationElement) -> Option<String> {
+    let candidates = [
+        unsafe { element.CurrentName() }
+            .ok()
+            .map(|name| name.to_string()),
+        property_string(element, UIA_LegacyIAccessibleNamePropertyId),
+        text_pattern_text(element),
+        readonly_value(element),
+    ];
+    candidates.into_iter().flatten().find_map(|text| {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    })
 }
 
 fn is_compose_element(element: &IUIAutomationElement) -> bool {
@@ -812,25 +1014,6 @@ fn is_compose_element(element: &IUIAutomationElement) -> bool {
         }
     }
     false
-}
-
-fn element_visible_text(element: &IUIAutomationElement) -> Option<String> {
-    let candidates = [
-        unsafe { element.CurrentName() }
-            .ok()
-            .map(|name| name.to_string()),
-        property_string(element, UIA_LegacyIAccessibleNamePropertyId),
-        text_pattern_text(element),
-        readonly_value(element),
-    ];
-    candidates.into_iter().flatten().find_map(|text| {
-        let text = text.trim().to_string();
-        if keep_bubble_text(&text) {
-            Some(text)
-        } else {
-            None
-        }
-    })
 }
 
 fn property_string(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<String> {

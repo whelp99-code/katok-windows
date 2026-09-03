@@ -1,20 +1,13 @@
 use super::error::SendError;
+use super::peek::{filter_peek_bubbles, PeekBubble};
 use super::target::{pick_visible_title, ResolvedTarget, SendRequest};
 use super::{PeekReport, SendReport};
-use serde::Serialize;
 use std::cell::RefCell;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiStatus {
     pub running: bool,
     pub logged_in: bool,
-}
-
-/// One visible chat bubble. `direction` is `incoming`, `outgoing`, or `unknown`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct PeekBubble {
-    pub direction: &'static str,
-    pub text: String,
 }
 
 /// Local UI surface of the official KakaoTalk.exe process.
@@ -148,6 +141,7 @@ impl KakaoTalkUi for FakeUi {
                 self.bubbles.borrow_mut().push(PeekBubble {
                     direction: "outgoing",
                     text,
+                    sender: None,
                 });
             }
         }
@@ -258,49 +252,4 @@ pub fn peek_messages(
         chat_id: target.chat_id.clone(),
         bubbles,
     })
-}
-
-/// Drop compose-box chrome such as `RichEdit Control`. Never keep that as a bubble.
-pub fn keep_bubble_text(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() || text.chars().count() > 2000 {
-        return false;
-    }
-    let lower = text.to_ascii_lowercase();
-    if lower.contains("richedit") || lower == "edit control" || lower == "document control" {
-        return false;
-    }
-    !matches!(
-        text,
-        "전송"
-            | "보내기"
-            | "Send"
-            | "검색"
-            | "Search"
-            | "카카오톡"
-            | "KakaoTalk"
-            | "이모티콘"
-            | "사진"
-            | "파일"
-    )
-}
-
-fn filter_peek_bubbles(bubbles: Vec<PeekBubble>) -> Vec<PeekBubble> {
-    bubbles
-        .into_iter()
-        .filter(|bubble| keep_bubble_text(&bubble.text))
-        .collect()
-}
-
-#[cfg(test)]
-mod bubble_filter_tests {
-    use super::keep_bubble_text;
-
-    #[test]
-    fn rejects_richedit_control_name() {
-        assert!(!keep_bubble_text("RichEdit Control"));
-        assert!(!keep_bubble_text("richedit control"));
-        assert!(keep_bubble_text("다시"));
-        assert!(keep_bubble_text("포커스없이"));
-    }
 }

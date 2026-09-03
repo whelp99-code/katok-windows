@@ -6,14 +6,14 @@
 
 mod driver;
 mod error;
+mod peek;
 mod target;
 #[cfg(target_os = "windows")]
 mod windows_ui;
 
-pub use driver::{
-    keep_bubble_text, peek_messages, send_message, FakeUi, KakaoTalkUi, PeekBubble, UiStatus,
-};
+pub use driver::{peek_messages, send_message, FakeUi, KakaoTalkUi, UiStatus};
 pub use error::SendError;
+pub use peek::{bubbles_from_nodes, keep_bubble_text, PeekBubble, PeekNode, PeekRect};
 pub use target::{pick_visible_title, resolve_target, titles_match, ResolvedTarget, SendRequest};
 
 use serde::Serialize;

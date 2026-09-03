@@ -400,10 +400,12 @@ fn peek_filters_compose_richedit_control() {
         PeekBubble {
             direction: "incoming",
             text: "RichEdit Control".to_string(),
+            sender: None,
         },
         PeekBubble {
             direction: "outgoing",
             text: "다시".to_string(),
+            sender: None,
         },
     ]);
     let report = peek_messages(
@@ -435,37 +437,46 @@ fn peek_filters_compose_richedit_control() {
 }
 
 #[test]
-fn peek_reads_last_visible_bubbles_from_open_chat() {
-    let ui = FakeUi::logged_in(vec!["박재민(제피란더스)".into()]).with_bubbles(vec![
+fn peek_reads_two_incoming_and_one_outgoing_from_open_chat() {
+    let ui = FakeUi::logged_in(vec!["에르메스단".into()]).with_bubbles(vec![
         PeekBubble {
             direction: "incoming",
-            text: "지금 가능해요?".to_string(),
+            text: "오..안티그래비티 썰먹가나요".to_string(),
+            sender: Some("코난쌤 한준구".to_string()),
+        },
+        PeekBubble {
+            direction: "incoming",
+            text: "3.8 모텔 카탈로그 떴나요? 왜 갱신 안되는거지".to_string(),
+            sender: Some("차포".to_string()),
         },
         PeekBubble {
             direction: "outgoing",
-            text: "네".to_string(),
+            text: "졸작역 고민하다가 3.8보고 신청하기로..".to_string(),
+            sender: None,
         },
     ]);
     let report = peek_messages(
         &ui,
         &SendRequest {
-            room: Some("제피란더스".to_string()),
+            room: Some("에르메스단".to_string()),
             chat: None,
             text: None,
             dry_run: false,
             peek: true,
         },
         &katok::send::ResolvedTarget {
-            title: "제피란더스".to_string(),
+            title: "에르메스단".to_string(),
             chat_id: None,
         },
     )
     .expect("peek");
-    assert_eq!(report.room, "박재민(제피란더스)");
-    assert_eq!(report.bubbles.len(), 2);
+    assert_eq!(report.room, "에르메스단");
+    assert_eq!(report.bubbles.len(), 3);
     assert_eq!(report.bubbles[0].direction, "incoming");
-    assert_eq!(report.bubbles[0].text, "지금 가능해요?");
-    assert_eq!(report.bubbles[1].direction, "outgoing");
+    assert_eq!(report.bubbles[0].sender.as_deref(), Some("코난쌤 한준구"));
+    assert_eq!(report.bubbles[1].direction, "incoming");
+    assert_eq!(report.bubbles[2].direction, "outgoing");
+    assert!(report.bubbles[2].text.contains("졸작역"));
     assert!(ui.pasted().is_none());
     assert_eq!(ui.send_presses(), 0);
 }

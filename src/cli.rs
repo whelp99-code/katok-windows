@@ -95,8 +95,9 @@ pub(crate) enum Commands {
     /// Read last visible bubbles from an already-open KakaoTalk chat window.
     ///
     /// Official KakaoTalk.exe UI only. Does not scrape Kakao servers and does
-    /// not open a closed room. The chat must already be visible. `--room` may
-    /// be the exact window title or a unique substring of it.
+    /// not open a closed room. Returns last visible incoming/outgoing bubbles
+    /// (group or 1:1). `--room` may be the exact window title or a unique
+    /// substring of it. Compose RichEdit and Send are not bubbles.
     #[cfg(feature = "windows-send")]
     Peek {
         /// Visible 1:1 title, or a unique substring of that title.
