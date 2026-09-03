@@ -84,6 +84,40 @@ katok chunk context <chunk-id>
 
 여러 방을 넣으려면 방마다 내보내기 → 각각 `sync` 하면 됩니다.
 
+---
+
+## 메시지 보내기 (Windows 공식 앱 UI)
+
+`katok send`는 **이미 실행 중이고 이미 로그인된** 공식 카카오톡 PC(`KakaoTalk.exe`)의 채팅창을 Windows UI Automation(입력칸 Value / 전송 Invoke)으로 조작합니다. 창이 앞에 있지 않아도 열린 채팅이면 보내기를 시도합니다. 포커스 훔치기(`AttachThreadInput` 등)는 보조일 뿐입니다. 카카오 프로토콜 클라이언트가 아니고, 로그인 도구도 아닙니다. 이 포크에서 macOS `katok send`는 범위 밖입니다.
+
+```bash
+# 1:1 방 제목으로 준비만 (전송 안 함)
+katok send --room 제피란더스 --dry-run --json
+
+# 보내기. 한글은 IME 대신 클립보드/UIA Value를 씁니다. 창이 백그라운드여도 됩니다.
+katok send --room 제피란더스 --text "안녕하세요"
+
+# 창 제목의 유일한 부분 문자열 (예: 보이는 제목이 박재민(제피란더스))
+katok send --room 제피란더스 --text "안녕하세요"
+
+# txt sync 후 아카이브 chat_id 로 지정
+katok send --chat txt-xxxxxxxx --text "안녕하세요" --json
+
+# 이미 열린 창의 최근 말풍선만 읽기 (서버 스크랩 아님, 닫힌 방은 열지 않음)
+katok peek --room 제피란더스 --json
+katok send --peek --room 제피란더스 --json
+```
+
+전제:
+
+- 공식 카카오톡 PC가 설치되어 있고, **이미 로그인된 상태**로 켜져 있어야 합니다.
+- `--room`은 카카오톡이 창에 보여주는 1:1 제목과 같거나, 그 제목의 **유일한 부분 문자열**이면 됩니다. 여러 방이 같은 부분 문자열을 가지면 추측하지 않고 실패합니다.
+- `--chat`은 `sync --source txt` 로 넣은 아카이브의 `chat_id`입니다. 같은 이름이 여러 방이면 `--chat`을 쓰세요.
+- `--dry-run`은 방을 열거나 준비한 뒤 멈춥니다. 입력하거나 Send를 누르지 않습니다.
+- `peek`은 **이미 열린 창만** 읽습니다 (1:1·그룹). 카카오 서버를 긁지 않습니다. 입력칸(`RichEdit Control`)과 Send 버튼은 말풍선이 아닙니다. JSON은 `room`과 `bubbles[{direction, text, sender?}]`입니다.
+- JSON `sent: true`는 입력칸이 비었거나 새 보낸 말풍선이 보일 때만 나옵니다. 입력칸에만 붙은 채 Send가 안 눌리면 실패입니다.
+- 카카오톡이 꺼져 있거나 로그인 화면이거나 방을 찾지 못하면 분명한 오류로 끝납니다. 실제 전송 테스트는 `--dry-run`만 사용하세요.
+
 ### 지원하는 .txt 형식
 
 - **PC/최신 모바일**: `--------------- 2026년 1월 1일 목요일 ---------------` 날짜 구분선 + `[이름] [오전 9:00] 본문`
@@ -120,6 +154,7 @@ macOS 상세는 원본 [NomaDamas/katok](https://github.com/NomaDamas/katok)을 
 
 - `--source txt` 소스 어댑터 추가 (`src/import_txt.rs`)
 - Windows 빌드 대응: Windows 타깃은 순정 SQLite(`rusqlite` `bundled`)로 빌드해 OpenSSL/perl 의존 제거
+- `katok send` / `katok peek`: 공식 `KakaoTalk.exe` UI로 1:1 전송·열린 창 말풍선 읽기 (Windows, `--dry-run` 지원, 포커스 불필요)
 - 데이터 디렉토리: Windows는 `%APPDATA%\katok`
 - 한글 문서
 

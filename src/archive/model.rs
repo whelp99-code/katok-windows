@@ -24,6 +24,13 @@ pub struct ParentChunkDraft {
     pub child_chunk_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatRecord {
+    pub chat_id: String,
+    pub chat_name: String,
+    pub chat_type: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredMessage {
     pub account_hash: String,

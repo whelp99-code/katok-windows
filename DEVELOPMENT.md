@@ -79,6 +79,7 @@
 | Windows 빌드 포팅 | 완료 (순정 SQLite, OpenSSL/perl 불필요) |
 | `--source txt` 검색 | 완료 (PC/모바일 내보내기 포맷 파싱) |
 | macOS 자동 직독 | 원본 그대로 유지 |
+| Windows `katok send` / `peek` | 공식 `KakaoTalk.exe` UI Automation (포커스 불필요) + 열린 창 말풍선 읽기 (프로토콜 클라이언트 아님) |
 | Windows 자동 직독 | **미제공** — Themida 보호 + 제3자 프라이버시/법적 이유 |
 
 Windows 카카오톡의 강한 보호는 사용자 프라이버시 관점에서는 오히려 바람직한 설계입니다. 이 프로젝트도 그 취지를 존중하여, 내 데이터를 내가 검색하는 합법 경로에 집중합니다.

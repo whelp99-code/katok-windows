@@ -15,6 +15,8 @@ mod chunk_commands;
 mod freshness;
 mod index_commands;
 mod permissions;
+#[cfg(feature = "windows-send")]
+mod send;
 mod source_adapter;
 
 pub(crate) fn run(
@@ -56,6 +58,29 @@ pub(crate) fn run(
         Commands::Permissions { command } => run_permissions(command),
         Commands::Chunks { chat, json } => run_chunks(&chat, json, &archive_path),
         Commands::WipeIndex { yes, json } => run_wipe_index(yes, json, &semantic_dir),
+        #[cfg(feature = "windows-send")]
+        Commands::Send {
+            room,
+            chat,
+            text,
+            dry_run,
+            peek,
+            list_windows,
+            json,
+        } => send::run(
+            room,
+            chat,
+            text,
+            dry_run,
+            peek,
+            list_windows,
+            json,
+            &archive_path,
+        ),
+        #[cfg(feature = "windows-send")]
+        Commands::Peek { room, chat, json } => {
+            send::run(room, chat, None, false, true, false, json, &archive_path)
+        }
     }
 }
 

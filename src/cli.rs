@@ -63,6 +63,52 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Send text through the official KakaoTalk Windows desktop app UI.
+    ///
+    /// KakaoTalk PC must already be running and logged in. This is not a login
+    /// tool and not a Kakao protocol client — it only drives KakaoTalk.exe via
+    /// Windows UI Automation / SendInput. An already-open chat does not need to
+    /// be the foreground window. macOS send is out of scope.
+    #[cfg(feature = "windows-send")]
+    Send {
+        /// Visible 1:1 title, or a unique substring of that title.
+        #[arg(long, required_unless_present_any = ["chat", "list_windows"])]
+        room: Option<String>,
+        /// Archive `chat_id` as reported by search / source chats / txt sync.
+        #[arg(long, conflicts_with = "room")]
+        chat: Option<String>,
+        /// Message body. Reads stdin when omitted (ignored with --dry-run / --peek).
+        #[arg(long)]
+        text: Option<String>,
+        /// Open/prepare the chat but do not type or press Send.
+        #[arg(long)]
+        dry_run: bool,
+        /// Read last visible bubbles from the already-open chat. Does not send.
+        #[arg(long, conflicts_with_all = ["dry_run", "text", "list_windows"])]
+        peek: bool,
+        /// List KakaoTalk window titles and exit without sending.
+        #[arg(long)]
+        list_windows: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read last visible bubbles from an already-open KakaoTalk chat window.
+    ///
+    /// Official KakaoTalk.exe UI only. Does not scrape Kakao servers and does
+    /// not open a closed room. Returns last visible incoming/outgoing bubbles
+    /// (group or 1:1). `--room` may be the exact window title or a unique
+    /// substring of it. Compose RichEdit and Send are not bubbles.
+    #[cfg(feature = "windows-send")]
+    Peek {
+        /// Visible 1:1 title, or a unique substring of that title.
+        #[arg(long, required_unless_present = "chat")]
+        room: Option<String>,
+        /// Archive `chat_id` as reported by search / source chats / txt sync.
+        #[arg(long, conflicts_with = "room")]
+        chat: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,11 +1,43 @@
-use super::{Archive, StoredMessage};
+use super::{Archive, ChatRecord, StoredMessage};
 use crate::{
     types::{Chunk, ChunkSummary},
     Error, Result,
 };
 use rusqlite::{params, OptionalExtension};
 
+fn chat_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRecord> {
+    Ok(ChatRecord {
+        chat_id: row.get(0)?,
+        chat_name: row.get(1)?,
+        chat_type: row.get(2)?,
+    })
+}
+
 impl Archive {
+    pub fn chat_by_id(&self, chat_id: &str) -> Result<Option<ChatRecord>> {
+        self.conn
+            .query_row(
+                "SELECT chat_id, chat_name, chat_type FROM chats WHERE chat_id = ?1",
+                [chat_id],
+                chat_record_from_row,
+            )
+            .optional()
+            .map_err(Error::Sql)
+    }
+
+    pub fn all_chats(&self) -> Result<Vec<ChatRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT chat_id, chat_name, chat_type FROM chats ORDER BY chat_name, chat_id")
+            .map_err(Error::Sql)?;
+        let rows = stmt
+            .query_map([], chat_record_from_row)
+            .map_err(Error::Sql)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Error::Sql)?;
+        Ok(rows)
+    }
+
     pub fn chunks_for_chat(&self, chat_id: &str) -> Result<Vec<ChunkSummary>> {
         let mut stmt = self
             .conn

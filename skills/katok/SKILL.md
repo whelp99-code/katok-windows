@@ -32,6 +32,17 @@ katok search semantic "지난 회의 보고서" --json
 katok chunk get <chunk-id> --json
 katok chunk context <chunk-id> --json
 katok chunk parent <chunk-id> --json
+
+# Windows only: drive official KakaoTalk.exe UI. App must already be logged in.
+# Not a login tool. Not a Kakao protocol client. macOS send is out of scope.
+# Open chat does not need to be foreground. --room may be a unique title substring.
+# sent:true only after compose is empty (paste-without-Enter is a failure).
+katok send --room "제피란더스" --dry-run --json
+katok send --room "제피란더스" --text "안녕하세요" --json
+katok send --chat <archive-chat-id> --text "안녕하세요" --json
+katok peek --room "제피란더스" --json
+katok send --peek --room "제피란더스" --json
+# peek JSON: { room, bubbles: [{ direction, text, sender? }] } — open window only
 ```
 
 For synthetic QA only:
